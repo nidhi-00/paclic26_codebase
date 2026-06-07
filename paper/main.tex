@@ -1,0 +1,86 @@
+% PACLIC 40 uses ACL 2026 two-column style.
+% Replace this preamble with the official ACL 2026 template files before submission.
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{times}
+\usepackage{latexsym}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{url}
+
+\title{Online Prediction or Contextual Integration?\\Comparing Autoregressive Surprisal and Masked Pseudo-Surprisal in Human Reading}
+
+\author{Anonymous PACLIC submission}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Language-model surprisal is widely used as a computational predictor of human reading difficulty, but different language-model objectives may correspond to different stages of processing. This paper compares local n-gram surprisal, left-to-right autoregressive transformer surprisal, and bidirectional masked pseudo-surprisal on word-level eye-tracking measures. We ask whether autoregressive surprisal better captures online prediction, while masked pseudo-surprisal captures later contextual compatibility. Using a naturalistic eye-tracking corpus, we evaluate early and late reading-time measures under lexical controls, incremental variance analysis, and sentence-level cross-validation. The study is designed as a stage-sensitive analysis rather than a model leaderboard.
+\end{abstract}
+
+\section{Introduction}
+Write the motivation here. Main claim: the best computational predictor may depend on the eye-tracking measure.
+
+\section{Related Work}
+Cover surprisal theory, n-gram/local statistics, transformer surprisal and reading time, and pseudo-log-likelihood for masked models.
+
+\section{Corpus and Preprocessing}
+Describe the chosen corpus, participant subset, reading-time measures, filtering, token alignment, and exclusion rates.
+
+\section{Predictors}
+\subsection{Lexical controls}
+Word length, log frequency, position in sentence, sentence length, sentence-initial and sentence-final indicators.
+
+\subsection{N-gram surprisal}
+Define the n-gram baseline.
+
+\subsection{Autoregressive surprisal}
+For a word $w_i$ in context $w_{<i}$:
+\begin{equation}
+S_{AR}(w_i) = -\log_2 P(w_i \mid w_{<i}).
+\end{equation}
+
+\subsection{Masked pseudo-surprisal}
+For a masked model using left and right context:
+\begin{equation}
+S_{MLM}(w_i) = -\sum_{t \in T(w_i)} \log_2 P(x_t \mid x_{\setminus t}).
+\end{equation}
+Explain that this is contextual compatibility, not direct online prediction.
+
+\section{Experiments}
+List model ladder: lexical baseline, lexical+n-gram, lexical+AR, lexical+MLM, lexical+n-gram+AR, full model.
+
+\section{Results}
+Include a table like this:
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lrrrr}
+\toprule
+Target & Model & $R^2$ & $\Delta R^2$ & CV RMSE \\
+\midrule
+Gaze duration & Lexical & -- & -- & -- \\
+Gaze duration & + AR & -- & -- & -- \\
+Total time & Lexical & -- & -- & -- \\
+Total time & + MLM & -- & -- & -- \\
+\bottomrule
+\end{tabular}
+\caption{Model comparison under lexical controls.}
+\end{table}
+
+\section{Discussion}
+Interpret whether AR surprisal is stronger for earlier measures and whether masked pseudo-surprisal adds variance for later measures.
+
+\section{Limitations and Ethics}
+Mention corpus genre, tokenization mismatch, masked pseudo-surprisal interpretation, and use of public/de-identified eye-tracking data.
+
+\section{Conclusion}
+Summarise the stage-sensitive conclusion.
+
+\bibliographystyle{acl_natbib}
+\bibliography{references}
+
+\end{document}

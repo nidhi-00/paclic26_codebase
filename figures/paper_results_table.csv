@@ -1,0 +1,21 @@
+target_label,model_label,r2_mean,r2_std,delta_r2_over_lexical,rmse_mean,mae_mean
+First fixation duration,Lexical,0.004723,0.001059,0.0,0.427562,0.319682
+First fixation duration,Lexical + GPT-2,0.004971,0.001148,0.000248,0.427509,0.319647
+First fixation duration,Lexical + BERT,0.004719,0.001058,-3e-06,0.427563,0.319682
+First fixation duration,Lexical + RoBERTa,0.004785,0.001061,6.2e-05,0.427549,0.319675
+First fixation duration,All surprisal,0.004989,0.00115,0.000266,0.427505,0.319643
+Gaze duration,Lexical,0.037045,0.003668,0.0,0.460171,0.347438
+Gaze duration,Lexical + GPT-2,0.038941,0.003808,0.001896,0.459717,0.347125
+Gaze duration,Lexical + BERT,0.03742,0.003648,0.000375,0.460081,0.347385
+Gaze duration,Lexical + RoBERTa,0.03837,0.00358,0.001325,0.459854,0.347191
+Gaze duration,All surprisal,0.039176,0.00372,0.00213,0.459661,0.347065
+Go-past time,Lexical,0.036791,0.00266,0.0,0.604313,0.443924
+Go-past time,Lexical + GPT-2,0.038928,0.002631,0.002137,0.603642,0.443321
+Go-past time,Lexical + BERT,0.037825,0.002703,0.001034,0.603989,0.443632
+Go-past time,Lexical + RoBERTa,0.03888,0.002568,0.002089,0.603658,0.443332
+Go-past time,All surprisal,0.039614,0.002629,0.002823,0.603427,0.443133
+Total reading time,Lexical,0.059655,0.005387,0.0,0.514497,0.394402
+Total reading time,Lexical + GPT-2,0.064003,0.005601,0.004348,0.513306,0.393433
+Total reading time,Lexical + BERT,0.060834,0.00539,0.001179,0.514174,0.394162
+Total reading time,Lexical + RoBERTa,0.062766,0.005381,0.003111,0.513645,0.393704
+Total reading time,All surprisal,0.064623,0.005578,0.004968,0.513136,0.393293
