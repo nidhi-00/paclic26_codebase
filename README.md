@@ -1,180 +1,161 @@
-# Surprisal Reading PACLIC Codebase
+# Transformer Predictability Beyond Lexical Controls in GECO
 
-This is a sprint-friendly codebase for the project:
+Reproducible code for the PACLIC manuscript comparing GPT-2 autoregressive surprisal with BERT and RoBERTa masked-language-model pseudo-surprisal on GECO eye-tracking measures.
 
-**Online Prediction or Contextual Integration? Comparing Autoregressive Surprisal and Masked Pseudo-Surprisal in Human Reading**
+This revision replaces the earlier scaffold with an auditable pipeline that:
 
-It is designed around a common word-level schema, so you can use GECO first and switch to Dundee later without rewriting the modelling pipeline.
+- preserves the exact stimulus tokens, including punctuation;
+- creates a unique sentence-item table before language-model scoring;
+- applies reading-time exclusions separately for each target;
+- computes rolling-window GPT-2 surprisal and target-centred MLM scores;
+- compares token-wise and whole-word masked scoring;
+- includes a non-leaky interpolated Kneser-Ney n-gram baseline;
+- evaluates identical target-valid samples with fold-local imputation and scaling;
+- reports sentence-held-out and participant-held-out out-of-fold metrics;
+- adds previous-word lexical and surprisal predictors;
+- produces paired cluster-bootstrap confidence intervals for every comparison;
+- runs edge/content-word robustness checks, item-level correlations, and optional mixed-effects confirmation;
+- writes data, alignment, merge, model, fold, bootstrap, and environment audits.
 
-## Which GECO files to download
+Read these documents before a paper run:
 
-From the official GECO download page, download only these three files for the main English monolingual analysis:
+- `docs/IMPLEMENTATION_REPORT.md` — mapping of all 17 requested changes to code.
+- `docs/RUNBOOK.md` — complete setup and execution instructions.
+- `docs/RESULTS_GUIDE.md` — expected files, validation checks, and interpretation.
+- `docs/PUSH_TO_GITHUB.md` — safe steps for replacing the old repository contents.
+- `docs/MANUSCRIPT_REVISION_MAP.md` — claims and methods wording supported by the new code.
 
-1. `EnglishMaterial` — English stimulus/material text.
-2. `MonolingualReadingData` — eye-tracking data for monolingual English readers. This is the large file.
-3. `SubjectInformation` — participant metadata.
-
-Do **not** download these for the first sprint unless you are doing bilingual robustness analyses:
-
-- `DutchMaterials`
-- `L1ReadingData`
-- `L2ReadingData`
-
-Place them here:
-
-```text
-data/raw/geco/EnglishMaterial.xlsx
-data/raw/geco/MonolingualReadingData.xlsx
-data/raw/geco/SubjectInformation.xlsx
-```
-
-If the downloaded file has `.xls`, `.csv`, or no extension, keep the original and pass the actual path to the scripts.
-
-## Setup
-
-```bash
-python -m venv .venv
-source .venv/bin/activate  # Windows PowerShell: .venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-```
-
-For transformer surprisal, install PyTorch according to your platform if the default install is slow or fails.
-
-## Pipeline overview
-
-### 1. Inspect GECO columns without opening the huge file in Excel
-
-```bash
-python -m src.inspect_tabular --input data/raw/geco/MonolingualReadingData.xlsx --rows 5
-```
-
-Copy the printed column names into `configs/geco.yaml`.
-
-### 2. Convert the huge Excel file to Parquet
-
-This avoids loading the full 500 MB workbook into memory.
-
-```bash
-python -m src.convert_xlsx_to_parquet \
-  --input data/raw/geco/MonolingualReadingData.xlsx \
-  --output data/intermediate/geco_raw.parquet \
-  --sheet 0 \
-  --chunk-size 50000
-```
-
-### 3. Standardise corpus columns
-
-Edit `configs/geco.yaml` first. Then run:
-
-```bash
-python -m src.prepare_corpus \
-  --config configs/geco.yaml \
-  --input data/intermediate/geco_raw.parquet \
-  --output data/processed/geco_standardised.parquet
-```
-
-### 4. Compute n-gram surprisal
-
-Use an external text file if possible. If you do not provide one, the script trains on the corpus sentences as a debug fallback only.
-
-```bash
-python -m src.ngram_baseline \
-  --input data/processed/geco_standardised.parquet \
-  --order 5 \
-  --output data/features/geco_ngram5.parquet
-```
-
-### 5. Compute autoregressive surprisal
-
-Start with DistilGPT-2 because it is faster.
-
-```bash
-python -m src.surprisal_ar \
-  --input data/processed/geco_standardised.parquet \
-  --model distilgpt2 \
-  --output data/features/geco_distilgpt2.parquet \
-  --max-sentences 100
-```
-
-Remove `--max-sentences` after the debug run works.
-
-### 6. Compute masked pseudo-surprisal
-
-Start with RoBERTa-base.
-
-```bash
-python -m src.surprisal_mlm \
-  --input data/processed/geco_standardised.parquet \
-  --model roberta-base \
-  --output data/features/geco_roberta.parquet \
-  --max-sentences 100
-```
-
-Remove `--max-sentences` after the debug run works.
-
-### 7. Merge all features
-
-```bash
-python -m src.merge_features \
-  --base data/processed/geco_standardised.parquet \
-  --feature data/features/geco_ngram5.parquet \
-  --feature data/features/geco_distilgpt2.parquet \
-  --feature data/features/geco_roberta.parquet \
-  --output data/final/geco_analysis.parquet
-```
-
-### 8. Run analysis
-
-```bash
-python -m src.analyse \
-  --input data/final/geco_analysis.parquet \
-  --targets log_gaze_duration log_total_reading_time \
-  --output-dir results/main
-```
-
-### 9. Plot results
-
-```bash
-python -m src.make_plots \
-  --results-dir results/main \
-  --output-dir results/figures
-```
-
-## Expected common schema
-
-`prepare_corpus.py` creates or expects these columns:
+## Repository layout
 
 ```text
-participant_id
-sentence_id
-word_id
-word
-sentence_text
-position_in_sentence
-sentence_length
-word_length
-word_lower
-log_word_frequency
-first_fixation_duration
-gaze_duration
-go_past_time
-total_reading_time
-log_first_fixation_duration
-log_gaze_duration
-log_go_past_time
-log_total_reading_time
+configs/
+  analysis.yaml             Explicit feature sets, splits, robustness checks, ridge and bootstrap settings
+  geco.yaml                 GECO raw-column mapping and target-specific thresholds
+docs/                       Detailed implementation and manuscript reports
+paper/                      ACL/PACLIC source shell and bibliography
+scripts/
+  run_pipeline.sh           Full GECO pipeline
+  run_debug.sh              Fast synthetic end-to-end smoke test
+  make_synthetic_data.py    Deterministic test corpus and features
+src/
+  prepare_corpus.py         Generic preprocessing
+  annotate_content_words.py POS/content-word annotation for robustness analysis
+  prepare_geco.py           GECO-specific preprocessing
+  surprisal_ar.py           Rolling-window GPT-2 surprisal
+  surprisal_mlm.py          Token-wise and whole-word pseudo-surprisal
+  ngram_baseline.py         External-corpus Kneser-Ney baseline
+  merge_features.py         Validated feature merge and previous-word features
+  evaluation.py             Fold construction, OOF metrics and paired uncertainty
+  analyse.py                Ridge CV, OOF predictions, robustness and bootstrap
+  mixed_effects.py          Optional confirmatory mixed-effects models
+  make_plots.py             Publication-readable figures with uncertainty
+  make_tables.py            CSV and LaTeX manuscript tables
+tests/                      Unit tests for the high-risk data and evaluation logic
 ```
 
-The exact GECO column names must be mapped in `configs/geco.yaml` after inspection.
+## Python environment
 
-## Notes for the paper
+Use Python 3.11. The pinned CPU environment is:
 
-For the 20-day version, keep the model set small:
+```bash
+cd /path/to/paclic26_codebase
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements-cpu.txt
+```
 
-- Lexical baseline
-- 5-gram baseline
-- DistilGPT-2 autoregressive surprisal
-- GPT-2 small optional
-- RoBERTa-base masked pseudo-surprisal
+On the college Ada GPU system, install the PyTorch 2.5.1 build compatible with the CUDA driver or use the institution's PyTorch module, then install the remaining packages:
 
-Use gaze duration as the main early-ish measure and total reading time as the main late measure. Add first fixation and go-past if the pipeline is stable.
+```bash
+cd /path/to/paclic26_codebase
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+# Install the CUDA-compatible torch==2.5.1 build provided/recommended by Ada first.
+python -m pip install -r requirements.txt
+```
+
+Verify the GPU before transformer scoring:
+
+```bash
+cd /path/to/paclic26_codebase
+source .venv/bin/activate
+python - <<'PY'
+import torch
+print("torch:", torch.__version__)
+print("cuda available:", torch.cuda.is_available())
+print("device:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU")
+PY
+```
+
+The regression, bootstrap, table and plotting stages are CPU tasks. Use the GPU for GPT-2, BERT and RoBERTa scoring.
+
+## Run the tests and smoke test
+
+```bash
+cd /path/to/paclic26_codebase
+source .venv/bin/activate
+python -m pytest
+./scripts/run_debug.sh
+```
+
+The debug run does not download language models. It creates deterministic synthetic feature values and verifies preprocessing, merging, both split strategies, OOF metrics, bootstrap intervals, figures and tables.
+
+## Full GECO run
+
+Download `MonolingualReadingData.xlsx` from GECO and obtain an external English corpus with one sentence per line for the n-gram model. Do not train the paper n-gram model on GECO itself.
+
+```bash
+cd /path/to/paclic26_codebase
+source .venv/bin/activate
+
+export RAW_GECO_XLSX="$PWD/data/raw/geco/MonolingualReadingData.xlsx"
+export NGRAM_TRAIN_TEXT="$PWD/data/raw/lm_train.txt"
+export DEVICE=cuda
+export RUN_MIXED=0
+export DOWNLOAD_NLTK=1  # first run only; later use 0
+
+./scripts/run_pipeline.sh
+```
+
+For a short scoring test on Ada:
+
+```bash
+cd /path/to/paclic26_codebase
+source .venv/bin/activate
+
+export RAW_GECO_XLSX="$PWD/data/raw/geco/MonolingualReadingData.xlsx"
+export NGRAM_TRAIN_TEXT="$PWD/data/raw/lm_train.txt"
+export DEVICE=cuda
+export MAX_SENTENCES=10
+
+./scripts/run_pipeline.sh
+```
+
+A `MAX_SENTENCES` run is diagnostic only. Do not report its numbers.
+
+## Main outputs
+
+```text
+data/processed/data_audit.json
+data/processed/content_word_audit.json
+data/features/*_alignment_audit.json
+data/final/merge_audit.json
+results/main/run_manifest.json
+results/main/model_metrics.csv
+results/main/fold_metrics.csv
+results/main/alpha_selections.csv
+results/main/bootstrap_intervals.csv
+results/main/surprisal_correlations.csv
+results/main/oof_predictions/*.parquet
+results/main/mixed_effects.csv                 # only when requested
+results/figures/*.png and *.pdf
+results/tables/main_model_table.csv and .tex
+```
+
+The paper's main quantitative claims should be copied only from these generated outputs. The old checked-in result images and CSVs were removed because they were not traceable to the uploaded source code.
+
+## Reproducibility rule
+
+Do not edit result CSVs or figure values manually. Rerun the relevant stage and regenerate tables/figures. Model audits record the resolved Hugging Face revision and package versions used during scoring.

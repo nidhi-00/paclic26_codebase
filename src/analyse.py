@@ -1,142 +1,277 @@
 from __future__ import annotations
 
 import argparse
-import json
+import platform
+import sys
 from pathlib import Path
-from typing import Dict, List
+from typing import Any
 
-import numpy as np
 import pandas as pd
-import statsmodels.formula.api as smf
-from sklearn.linear_model import Ridge
-from sklearn.metrics import mean_absolute_error, mean_squared_error
-from sklearn.model_selection import GroupKFold
-from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import StandardScaler
+import yaml
 
-from .common import ensure_parent, read_table
-
-BASE_CONTROLS = [
-    "word_length",
-    "log_word_frequency",
-    "position_in_sentence",
-    "sentence_length",
-]
-BASE_BINARY = ["is_sentence_initial", "is_sentence_final"]
+from .common import environment_versions, read_table, write_json, write_table
+from .evaluation import (
+    bootstrap_oof_differences,
+    evaluate_models,
+    resolve_models,
+    surprisal_correlations,
+)
 
 
-def available_predictors(df: pd.DataFrame) -> Dict[str, List[str]]:
-    ngram = [c for c in df.columns if c.startswith("ngram") and c.endswith("_surprisal")]
-    ar = [c for c in df.columns if c.endswith("_surprisal") and not c.startswith("ngram") and "pseudo" not in c]
-    mlm = [c for c in df.columns if c.endswith("_pseudo_surprisal")]
-    return {"ngram": ngram, "ar": ar, "mlm": mlm}
+def load_config(path: str | Path) -> dict[str, Any]:
+    with Path(path).open("r", encoding="utf-8") as handle:
+        return yaml.safe_load(handle) or {}
 
 
-def model_specs(df: pd.DataFrame) -> Dict[str, List[str]]:
-    pred = available_predictors(df)
-    ngram_main = pred["ngram"][:1]
-    ar_main = pred["ar"][:1]
-    mlm_main = pred["mlm"][:1]
-    base = [c for c in BASE_CONTROLS + BASE_BINARY if c in df.columns]
-    return {
-        "lexical": base,
-        "lexical_plus_ngram": base + ngram_main,
-        "lexical_plus_ar": base + ar_main,
-        "lexical_plus_mlm": base + mlm_main,
-        "lexical_plus_ngram_ar": base + ngram_main + ar_main,
-        "full_ngram_ar_mlm": base + ngram_main + ar_main + mlm_main,
-    }
+def select_robustness_sample(data: pd.DataFrame, name: str, expression: str) -> pd.DataFrame:
+    try:
+        sample = data.query(expression, engine="python").copy()
+    except Exception as error:
+        raise ValueError(f"Could not apply robustness filter {name!r}: {expression!r}") from error
+    return sample
 
 
-def fit_ols(df: pd.DataFrame, target: str, predictors: List[str]) -> dict:
-    cols = [target] + predictors
-    sub = df[cols].dropna().copy()
-    if len(sub) < 100:
-        raise ValueError(f"Too few rows for {target} with predictors {predictors}: {len(sub)}")
-    formula = target + " ~ " + " + ".join(predictors)
-    model = smf.ols(formula, data=sub).fit()
-    return {
-        "n": int(len(sub)),
-        "r2": float(model.rsquared),
-        "adj_r2": float(model.rsquared_adj),
-        "aic": float(model.aic),
-        "bic": float(model.bic),
-        "params": {k: float(v) for k, v in model.params.items()},
-        "pvalues": {k: float(v) for k, v in model.pvalues.items()},
-    }
 
 
-def cv_metrics(df: pd.DataFrame, target: str, predictors: List[str], group_col: str = "sentence_id") -> dict:
-    cols = [target, group_col] + predictors
-    sub = df[cols].dropna().copy()
-    if sub[group_col].nunique() < 5:
-        return {"cv_rmse": np.nan, "cv_mae": np.nan}
-    X = sub[predictors].to_numpy(dtype=float)
-    y = sub[target].to_numpy(dtype=float)
-    groups = sub[group_col].astype(str).to_numpy()
-    gkf = GroupKFold(n_splits=5)
-    preds = np.zeros_like(y)
-    for train_idx, test_idx in gkf.split(X, y, groups):
-        pipe = make_pipeline(StandardScaler(), Ridge(alpha=1.0))
-        pipe.fit(X[train_idx], y[train_idx])
-        preds[test_idx] = pipe.predict(X[test_idx])
-    return {
-        "cv_rmse": float(mean_squared_error(y, preds, squared=False)),
-        "cv_mae": float(mean_absolute_error(y, preds)),
-    }
-
-
-def run_analysis(df: pd.DataFrame, target: str, output_dir: Path) -> None:
-    specs = model_specs(df)
-    records = []
-    detailed = {}
-    lexical_r2 = None
-
-    for name, predictors in specs.items():
-        predictors = [p for p in predictors if p in df.columns]
-        if not predictors:
-            continue
-        result = fit_ols(df, target, predictors)
-        cv = cv_metrics(df, target, predictors)
-        if name == "lexical":
-            lexical_r2 = result["r2"]
-        delta = result["r2"] - lexical_r2 if lexical_r2 is not None else np.nan
-        records.append({
-            "target": target,
-            "model": name,
-            "n_predictors": len(predictors),
-            "n": result["n"],
-            "r2": result["r2"],
-            "adj_r2": result["adj_r2"],
-            "delta_r2_vs_lexical": delta,
-            "aic": result["aic"],
-            "bic": result["bic"],
-            **cv,
-            "predictors": ",".join(predictors),
-        })
-        detailed[name] = result
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(records).to_csv(output_dir / f"{target}_model_comparison.csv", index=False)
-    with open(output_dir / f"{target}_ols_details.json", "w", encoding="utf-8") as f:
-        json.dump(detailed, f, indent=2)
-    print(f"Wrote results for {target} to {output_dir}")
-
+def benjamini_hochberg(values: pd.Series) -> pd.Series:
+    result = pd.Series(float("nan"), index=values.index, dtype=float)
+    valid = values.dropna().astype(float)
+    if valid.empty:
+        return result
+    ordered = valid.sort_values()
+    count = len(ordered)
+    adjusted = ordered.to_numpy() * count / (pd.Series(range(1, count + 1), index=ordered.index).to_numpy())
+    adjusted = pd.Series(adjusted, index=ordered.index)
+    adjusted = adjusted.iloc[::-1].cummin().iloc[::-1].clip(upper=1.0)
+    result.loc[adjusted.index] = adjusted
+    return result
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="Run like-for-like ridge evaluation with sentence- and participant-held-out predictions."
+    )
     parser.add_argument("--input", required=True)
-    parser.add_argument("--targets", nargs="+", default=["log_gaze_duration", "log_total_reading_time"])
+    parser.add_argument("--config", default="configs/analysis.yaml")
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--targets", nargs="+", default=None)
+    parser.add_argument("--models", nargs="+", default=None)
+    parser.add_argument("--splits", nargs="+", default=None)
+    parser.add_argument("--robustness", nargs="+", default=None)
+    parser.add_argument("--allow-missing-core", action="store_true")
+    parser.add_argument("--no-tune-alpha", action="store_true")
+    parser.add_argument("--bootstrap-iterations", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--oof-format", choices=["parquet", "csv"], default="parquet")
     args = parser.parse_args()
 
-    df = read_table(args.input)
-    outdir = Path(args.output_dir)
-    for target in args.targets:
-        if target not in df.columns:
-            print(f"Skipping missing target: {target}")
+    config = load_config(args.config)
+    data = read_table(args.input)
+    output_dir = Path(args.output_dir)
+    oof_dir = output_dir / "oof_predictions"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    oof_dir.mkdir(parents=True, exist_ok=True)
+
+    baseline = list(config["baseline"])
+    feature_map = dict(config["features"])
+    model_map = {name: list(aliases or []) for name, aliases in config["models"].items()}
+    if args.models:
+        requested_models = list(dict.fromkeys(["lexical", *args.models]))
+        unknown_models = [name for name in requested_models if name not in model_map]
+        if unknown_models:
+            raise KeyError(f"Unknown model names: {unknown_models}")
+        model_map = {name: model_map[name] for name in requested_models}
+    models, skipped_models = resolve_models(
+        columns=data.columns,
+        baseline=baseline,
+        feature_map=feature_map,
+        model_map=model_map,
+        core_models=config.get("core_models", []),
+        strict_core=not args.allow_missing_core,
+    )
+
+    targets = args.targets or list(config.get("targets", []))
+    split_config = dict(config.get("splits", {}))
+    split_names = args.splits or list(split_config)
+    robustness_config = dict(config.get("robustness", {"full": "is_analysis_token == 1"}))
+    robustness_names = args.robustness or list(robustness_config)
+
+    ridge_config = config.get("ridge", {})
+    alphas = [float(value) for value in ridge_config.get("alphas", [1.0])]
+    tune_alpha = bool(ridge_config.get("tune_alpha", True)) and not args.no_tune_alpha
+    inner_folds = int(ridge_config.get("inner_folds", 3))
+    bootstrap_config = config.get("bootstrap", {})
+    bootstrap_iterations = args.bootstrap_iterations or int(bootstrap_config.get("iterations", 2000))
+    seed = args.seed if args.seed is not None else int(bootstrap_config.get("seed", 20260801))
+
+    all_metrics: list[pd.DataFrame] = []
+    all_fold_metrics: list[pd.DataFrame] = []
+    all_bootstrap: list[pd.DataFrame] = []
+    all_alphas: list[pd.DataFrame] = []
+    skipped_runs: list[dict[str, Any]] = []
+    oof_manifest: list[dict[str, Any]] = []
+
+    for robustness_name in robustness_names:
+        if robustness_name not in robustness_config:
+            raise KeyError(f"Unknown robustness filter: {robustness_name}")
+        expression = robustness_config[robustness_name]
+        try:
+            sample = select_robustness_sample(data, robustness_name, expression)
+        except ValueError as error:
+            skipped_runs.append(
+                {"robustness": robustness_name, "reason": str(error)}
+            )
             continue
-        run_analysis(df, target, outdir)
+        if len(sample) < 100:
+            skipped_runs.append(
+                {
+                    "robustness": robustness_name,
+                    "reason": f"filter retained only {len(sample)} rows",
+                }
+            )
+            continue
+
+        for target in targets:
+            if target not in sample.columns:
+                skipped_runs.append(
+                    {"target": target, "robustness": robustness_name, "reason": "target column missing"}
+                )
+                continue
+            for split_name in split_names:
+                if split_name not in split_config:
+                    raise KeyError(f"Unknown split: {split_name}")
+                split = split_config[split_name]
+                group_column = split["group_column"]
+                if group_column not in sample.columns:
+                    skipped_runs.append(
+                        {
+                            "target": target,
+                            "split": split_name,
+                            "robustness": robustness_name,
+                            "reason": f"group column {group_column!r} missing",
+                        }
+                    )
+                    continue
+                try:
+                    metrics, fold_metrics, oof, alpha_rows = evaluate_models(
+                        sample=sample,
+                        target=target,
+                        group_column=group_column,
+                        split_name=split_name,
+                        split_method=split["method"],
+                        folds=split.get("folds"),
+                        models=models,
+                        alphas=alphas,
+                        tune=tune_alpha,
+                        inner_folds=inner_folds,
+                        robustness_name=robustness_name,
+                    )
+                except ValueError as error:
+                    skipped_runs.append(
+                        {
+                            "target": target,
+                            "split": split_name,
+                            "robustness": robustness_name,
+                            "reason": str(error),
+                        }
+                    )
+                    continue
+
+                bootstrap = bootstrap_oof_differences(
+                    oof=oof,
+                    group_column=group_column,
+                    model_names=[model.name for model in models],
+                    iterations=bootstrap_iterations,
+                    seed=seed,
+                )
+                bootstrap.insert(0, "robustness", robustness_name)
+                bootstrap.insert(0, "split", split_name)
+                bootstrap.insert(0, "target", target)
+
+                safe_target = target.replace("/", "_")
+                oof_path = oof_dir / f"{safe_target}__{split_name}__{robustness_name}.{args.oof_format}"
+                write_table(oof, oof_path)
+                oof_manifest.append(
+                    {
+                        "target": target,
+                        "split": split_name,
+                        "robustness": robustness_name,
+                        "path": str(oof_path.relative_to(output_dir)),
+                        "rows": len(oof),
+                        "models": [model.name for model in models],
+                    }
+                )
+                all_metrics.append(metrics)
+                all_fold_metrics.append(fold_metrics)
+                all_bootstrap.append(bootstrap)
+                all_alphas.append(alpha_rows)
+                print(
+                    f"Completed target={target}, split={split_name}, robustness={robustness_name}, rows={len(oof):,}"
+                )
+
+    if not all_metrics:
+        raise RuntimeError("No analysis run completed. Check the run_manifest.json diagnostics.")
+
+    metrics_output = pd.concat(all_metrics, ignore_index=True)
+    fold_output = pd.concat(all_fold_metrics, ignore_index=True)
+    bootstrap_output = pd.concat(all_bootstrap, ignore_index=True)
+    alpha_output = pd.concat(all_alphas, ignore_index=True)
+    bootstrap_output["cluster_signflip_q_bh_global"] = benjamini_hochberg(
+        bootstrap_output["cluster_signflip_p_two_sided"]
+    )
+    bootstrap_output["cluster_signflip_q_bh_within_run"] = (
+        bootstrap_output.groupby(["target", "split", "robustness"], group_keys=False)[
+            "cluster_signflip_p_two_sided"
+        ].apply(benjamini_hochberg)
+    )
+    write_table(metrics_output, output_dir / "model_metrics.csv")
+    write_table(fold_output, output_dir / "fold_metrics.csv")
+    write_table(bootstrap_output, output_dir / "bootstrap_intervals.csv")
+    write_table(alpha_output, output_dir / "alpha_selections.csv")
+
+    correlation_columns = list(
+        dict.fromkeys(
+            column
+            for alias, column in feature_map.items()
+            if "prev_" not in alias and column in data.columns and "surprisal" in column
+        )
+    )
+    correlations = surprisal_correlations(data, correlation_columns)
+    write_table(correlations, output_dir / "surprisal_correlations.csv")
+
+    manifest = {
+        "input": str(args.input),
+        "config": str(args.config),
+        "python": sys.version,
+        "platform": platform.platform(),
+        "environment_versions": environment_versions(),
+        "input_rows": len(data),
+        "targets": targets,
+        "splits": split_names,
+        "robustness_filters": robustness_names,
+        "resolved_models": [
+            {
+                "name": model.name,
+                "aliases": list(model.aliases),
+                "predictors": list(model.predictors),
+            }
+            for model in models
+        ],
+        "skipped_models": skipped_models,
+        "skipped_runs": skipped_runs,
+        "ridge_alphas": alphas,
+        "nested_alpha_tuning": tune_alpha,
+        "inner_folds": inner_folds,
+        "bootstrap_iterations": bootstrap_iterations,
+        "seed": seed,
+        "oof_files": oof_manifest,
+        "metric_definition": {
+            "r2": "pooled out-of-fold R2 on a common target-valid sample",
+            "delta_r2": "model pooled out-of-fold R2 minus lexical pooled out-of-fold R2",
+            "bootstrap": "paired cluster bootstrap over the held-out grouping unit using saved OOF predictions",
+        },
+    }
+    write_json(manifest, output_dir / "run_manifest.json")
+    print(f"Analysis outputs written to {output_dir}")
 
 
 if __name__ == "__main__":

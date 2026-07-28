@@ -7,6 +7,8 @@ import pyarrow.parquet as pq
 from openpyxl import load_workbook
 from tqdm import tqdm
 
+from .common import file_sha256, write_json
+
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -14,6 +16,7 @@ def parse_args():
     parser.add_argument("--output", required=True)
     parser.add_argument("--sheet", default="DATA")
     parser.add_argument("--chunk-size", type=int, default=50000)
+    parser.add_argument("--no-hash", action="store_true")
     return parser.parse_args()
 
 
@@ -36,7 +39,7 @@ def clean_cell(x):
     return str(x)
 
 
-def convert_xlsx_to_parquet(input_path, output_path, sheet_arg="DATA", chunk_size=50000):
+def convert_xlsx_to_parquet(input_path, output_path, sheet_arg="DATA", chunk_size=50000, compute_hash=True):
     input_path = Path(input_path)
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -102,9 +105,23 @@ def convert_xlsx_to_parquet(input_path, output_path, sheet_arg="DATA", chunk_siz
 
     wb.close()
 
+    metadata_path = output_path.with_suffix(".metadata.json")
+    write_json(
+        {
+            "input": str(input_path),
+            "output": str(output_path),
+            "sheet": str(sheet_arg),
+            "chunk_size": chunk_size,
+            "rows": total_rows,
+            "columns": header,
+            "input_sha256": file_sha256(input_path) if compute_hash else None,
+        },
+        metadata_path,
+    )
     print("Done.")
     print(f"Saved to: {output_path}")
     print(f"Total rows written: {total_rows:,}")
+    print(f"Metadata: {metadata_path}")
 
 
 def main():
@@ -114,6 +131,7 @@ def main():
         output_path=args.output,
         sheet_arg=args.sheet,
         chunk_size=args.chunk_size,
+        compute_hash=not args.no_hash,
     )
 
 

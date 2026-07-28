@@ -1,4 +1,5 @@
 corpus_name: dundee
+language: en
 
 column_map:
   participant_id: ""
@@ -14,6 +15,8 @@ optional_column_map:
   sentence_text: ""
   position_in_sentence: ""
   sentence_length: ""
+  pos: ""
+  is_content_word: ""
 
 filters:
   min_rt: 50
@@ -21,5 +24,3 @@ filters:
   max_gaze_duration: 1500
   max_go_past_time: 5000
   max_total_reading_time: 8000
-
-reconstruct_sentences: true

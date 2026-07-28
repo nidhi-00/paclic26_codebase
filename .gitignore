@@ -1,93 +1,48 @@
-# =========================
-# Raw / processed datasets
-# =========================
-data/raw/
-data/intermediate/
-data/processed/
+# Python environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
 
+# Data and model outputs
+data/
+results/
+models/
 *.xlsx
 *.xls
 *.parquet
-
-# Keep only placeholder files if needed
-!data/.gitkeep
-!data/raw/.gitkeep
-!data/intermediate/.gitkeep
-!data/processed/.gitkeep
-
-# =========================
-# Heavy generated model outputs
-# =========================
-results/surprisal/
 *.pt
 *.bin
 *.safetensors
 
-# Keep small result tables
-!results/
-!results/stats/
-!results/stats/*.csv
-!results/stats_full/
-!results/stats_full/*.csv
-!results/descriptives/
-!results/descriptives/*.csv
-!results/robustness/
-!results/robustness/*.csv
+# Generated figures; retain placeholder only
+figures/*
+!figures/.gitkeep
 
-# =========================
-# Paper figures and result CSVs
-# =========================
-!figures/
-!figures/*.csv
-!figures/*.png
-!figures/*.pdf
-
-!paper/
-!paper/figures/
-!paper/figures/*.csv
-!paper/figures/*.png
-!paper/figures/*.pdf
-
-# =========================
-# Backups / transfer files
-# =========================
-backups/
-transfer/
+# Archives and transfers
 *.zip
 *.tar.gz
 *.tgz
 *.7z
-paclic26_to_ada.zip
+backups/
+transfer/
 
-# =========================
-# Python cache
-# =========================
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.ipynb_checkpoints/
-
-# =========================
-# Logs / temp files
-# =========================
+# Logs and temporary files
 logs/
 *.log
 tmp/
 temp/
-.tmp/
 
-# =========================
-# OS / editor files
-# =========================
+# Editors and operating systems
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
 
-# =========================
 # LaTeX build files
-# =========================
 *.aux
 *.bbl
 *.blg
@@ -96,6 +51,3 @@ Thumbs.db
 *.out
 *.synctex.gz
 *.toc
-
-# Duplicate local paper copy
-Copy of paper/

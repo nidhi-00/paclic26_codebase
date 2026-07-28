@@ -1,34 +1,38 @@
-# Edit this after running:
-# python -m src.inspect_tabular --input data/raw/geco/MonolingualReadingData.xlsx --rows 5
+corpus_name: geco_monolingual_english
+language: en
 
-corpus_name: geco
+raw_row_filters:
+  - column: GROUP
+    equals: monolingual
+  - column: LANGUAGE_RANK
+    equals: L1
+  - column: LANGUAGE
+    equals: English
 
-# Map your raw GECO column names to the common schema.
-# Keep values blank until you inspect the file.
+derived_sentence_id:
+  columns: [PART, TRIAL]
+  separator: "-"
+
 column_map:
-  participant_id: ""
-  sentence_id: ""
-  word_id: ""
-  word: ""
-  first_fixation_duration: ""
-  gaze_duration: ""
-  go_past_time: ""
-  total_reading_time: ""
+  participant_id: PP_NR
+  sentence_id: sentence_id
+  word_id: WORD_ID_WITHIN_TRIAL
+  word: WORD
+  first_fixation_duration: WORD_FIRST_FIXATION_DURATION
+  gaze_duration: WORD_GAZE_DURATION
+  go_past_time: WORD_GO_PAST_TIME
+  total_reading_time: WORD_TOTAL_READING_TIME
 
-# Optional if the corpus already has sentence text or sentence position.
 optional_column_map:
   sentence_text: ""
-  position_in_sentence: ""
+  position_in_sentence: WORD_ID_WITHIN_TRIAL
   sentence_length: ""
+  pos: ""
+  is_content_word: ""
 
-# Reading-time filters in milliseconds. Adjust after inspecting histograms.
 filters:
   min_rt: 50
   max_first_fixation_duration: 800
   max_gaze_duration: 1500
   max_go_past_time: 5000
   max_total_reading_time: 8000
-
-# If sentence_text is missing, prepare_corpus will reconstruct sentences by
-# grouping sentence_id and sorting by position/word_id.
-reconstruct_sentences: true

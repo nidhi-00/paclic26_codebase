@@ -2,108 +2,167 @@ from __future__ import annotations
 
 import argparse
 import math
-from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Iterable, List, Tuple
+from typing import Iterable, Sequence
 
 import pandas as pd
+from nltk.lm import KneserNeyInterpolated, Vocabulary
+from nltk.lm.preprocessing import padded_everygram_pipeline
 from tqdm import tqdm
 
-from .common import KEY_COLS, read_table, write_table
-
-BOS = "<s>"
-EOS = "</s>"
-UNK = "<unk>"
+from .common import ITEM_KEY_COLS, environment_versions, read_table, write_json, write_table
 
 
-def tokenize_sentence(text: str) -> List[str]:
-    return str(text).strip().split()
+def tokenize_line(text: str, lowercase: bool = True) -> list[str]:
+    tokens = str(text).strip().split()
+    return [token.casefold() for token in tokens] if lowercase else tokens
 
 
-class AddKNGram:
-    def __init__(self, order: int = 5, alpha: float = 0.1, min_count: int = 1):
-        self.order = order
-        self.alpha = alpha
-        self.min_count = min_count
-        self.counts = [Counter() for _ in range(order + 1)]
-        self.context_counts = [Counter() for _ in range(order + 1)]
-        self.vocab = set()
-
-    def fit(self, sentences: Iterable[List[str]]) -> None:
-        raw_counts = Counter(tok.lower() for sent in sentences for tok in sent)
-        self.vocab = {w for w, c in raw_counts.items() if c >= self.min_count}
-        self.vocab.update({BOS, EOS, UNK})
-        for sent in sentences:
-            toks = [w.lower() if w.lower() in self.vocab else UNK for w in sent]
-            padded = [BOS] * (self.order - 1) + toks + [EOS]
-            for n in range(1, self.order + 1):
-                for i in range(len(padded) - n + 1):
-                    ng = tuple(padded[i : i + n])
-                    self.counts[n][ng] += 1
-                    if n > 1:
-                        self.context_counts[n][ng[:-1]] += 1
-
-    def prob(self, word: str, context: List[str]) -> float:
-        word = word.lower() if word.lower() in self.vocab else UNK
-        ctx = [w.lower() if w.lower() in self.vocab else UNK for w in context]
-        vocab_size = len(self.vocab)
-        # Try highest-order available context with add-alpha smoothing.
-        for n in range(min(self.order, len(ctx) + 1), 0, -1):
-            hist = tuple(ctx[-(n - 1) :]) if n > 1 else tuple()
-            ng = hist + (word,)
-            numerator = self.counts[n][ng] + self.alpha
-            denominator = (self.context_counts[n][hist] if n > 1 else sum(self.counts[1].values())) + self.alpha * vocab_size
-            if denominator > 0:
-                return numerator / denominator
-        return 1.0 / vocab_size
-
-    def surprisal(self, word: str, context: List[str]) -> float:
-        return -math.log2(max(self.prob(word, context), 1e-12))
+def load_external_sentences(path: str | Path, lowercase: bool = True) -> list[list[str]]:
+    sentences: list[list[str]] = []
+    with Path(path).open("r", encoding="utf-8", errors="ignore") as handle:
+        for line in handle:
+            tokens = tokenize_line(line, lowercase=lowercase)
+            if tokens:
+                sentences.append(tokens)
+    if not sentences:
+        raise ValueError(f"No non-empty training sentences were found in {path}")
+    return sentences
 
 
-def load_training_sentences(path: str | None, fallback_df: pd.DataFrame) -> List[List[str]]:
-    if path:
-        sentences = []
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            for line in f:
-                toks = tokenize_sentence(line)
-                if toks:
-                    sentences.append(toks)
-        return sentences
-    print("WARNING: No --train-text supplied. Training n-gram model on corpus sentences as debug fallback only.")
-    return [tokenize_sentence(s) for s in fallback_df.drop_duplicates("sentence_id")["sentence_text"]]
+def corpus_sentences(items: pd.DataFrame, lowercase: bool = True) -> list[list[str]]:
+    return [
+        [token.casefold() if lowercase else token for token in group["stimulus_token"].astype(str)]
+        for _, group in items.sort_values(["sentence_id", "position_in_sentence"]).groupby("sentence_id", sort=False)
+    ]
+
+
+def train_model(
+    sentences: Sequence[Sequence[str]],
+    order: int,
+    discount: float,
+    vocabulary_cutoff: int,
+) -> KneserNeyInterpolated:
+    flat = [token for sentence in sentences for token in sentence]
+    vocabulary = Vocabulary(flat, unk_cutoff=vocabulary_cutoff)
+    train_data, _ = padded_everygram_pipeline(order, sentences)
+    model = KneserNeyInterpolated(
+        order=order,
+        discount=discount,
+        vocabulary=vocabulary,
+    )
+    model.fit(train_data)
+    return model
+
+
+def score_items(
+    model: KneserNeyInterpolated,
+    items: pd.DataFrame,
+    order: int,
+    lowercase: bool = True,
+    probability_floor: float = 1e-12,
+) -> pd.DataFrame:
+    feature = f"ngram{order}_kn_surprisal"
+    rows: list[dict] = []
+    grouped = items.sort_values(["sentence_id", "position_in_sentence"]).groupby("sentence_id", sort=False)
+    for _, group in tqdm(grouped, desc=f"{order}-gram Kneser-Ney surprisal"):
+        context: list[str] = []
+        for _, item in group.iterrows():
+            token = str(item["stimulus_token"])
+            token = token.casefold() if lowercase else token
+            lookup_token = model.vocab.lookup(token)
+            lookup_context = [model.vocab.lookup(value) for value in context[-(order - 1) :]]
+            probability = float(model.score(lookup_token, lookup_context))
+            surprisal = -math.log2(max(probability, probability_floor))
+            rows.append(
+                {
+                    "sentence_id": item["sentence_id"],
+                    "word_id": item["word_id"],
+                    feature: surprisal,
+                }
+            )
+            context.append(token)
+    return pd.DataFrame(rows)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--input", required=True)
+    parser = argparse.ArgumentParser(description="Compute a non-leaky interpolated Kneser-Ney n-gram baseline.")
+    parser.add_argument("--input", required=True, help="Unique item table.")
     parser.add_argument("--output", required=True)
-    parser.add_argument("--train-text", default=None)
+    parser.add_argument("--train-text", default=None, help="External one-sentence-per-line training text.")
+    parser.add_argument(
+        "--allow-corpus-training",
+        action="store_true",
+        help="Debug only: train on the evaluation corpus. Never use this for paper results.",
+    )
     parser.add_argument("--order", type=int, default=5)
-    parser.add_argument("--alpha", type=float, default=0.1)
+    parser.add_argument("--discount", type=float, default=0.1)
+    parser.add_argument("--vocabulary-cutoff", type=int, default=1)
+    parser.add_argument("--preserve-case", action="store_true")
+    parser.add_argument("--audit-output", default=None)
     args = parser.parse_args()
 
-    df = read_table(args.input)
-    sentence_df = df.drop_duplicates(["sentence_id", "position_in_sentence"])
-    train_sents = load_training_sentences(args.train_text, sentence_df)
-    model = AddKNGram(order=args.order, alpha=args.alpha)
-    model.fit(train_sents)
+    if args.order < 1:
+        raise ValueError("--order must be at least 1.")
+    if not args.train_text and not args.allow_corpus_training:
+        raise ValueError(
+            "A non-leaky paper run requires --train-text. Use --allow-corpus-training only for debugging."
+        )
 
-    rows = []
-    for sid, g in tqdm(sentence_df.groupby("sentence_id"), desc="Computing n-gram surprisal"):
-        g = g.sort_values("position_in_sentence")
-        context: List[str] = []
-        for _, row in g.iterrows():
-            word = str(row["word_clean"] if "word_clean" in g.columns else row["word"])
-            surprisal = model.surprisal(word, context)
-            rows.append({"sentence_id": row["sentence_id"], "word_id": row["word_id"], f"ngram{args.order}_surprisal": surprisal})
-            context.append(word)
+    items = read_table(args.input)
+    required = set(ITEM_KEY_COLS + ["position_in_sentence", "stimulus_token"])
+    missing = sorted(required - set(items.columns))
+    if missing:
+        raise KeyError(f"Item table is missing required columns: {missing}")
+    if items.duplicated(ITEM_KEY_COLS).any():
+        raise ValueError("Input to ngram_baseline must contain unique sentence/word items.")
 
-    feat = pd.DataFrame(rows)
-    # Expand to participant rows via merge keys sentence_id + word_id.
-    out = df[KEY_COLS].merge(feat, on=["sentence_id", "word_id"], how="left")
-    write_table(out, args.output)
-    print(f"Wrote {len(out):,} rows to {args.output}")
+    lowercase = not args.preserve_case
+    if args.train_text:
+        sentences = load_external_sentences(args.train_text, lowercase=lowercase)
+        training_source = str(Path(args.train_text))
+        leaky_debug = False
+    else:
+        sentences = corpus_sentences(items, lowercase=lowercase)
+        training_source = "evaluation_corpus_debug_only"
+        leaky_debug = True
+
+    model = train_model(
+        sentences=sentences,
+        order=args.order,
+        discount=args.discount,
+        vocabulary_cutoff=args.vocabulary_cutoff,
+    )
+    features = score_items(model, items, args.order, lowercase=lowercase)
+    if features.duplicated(ITEM_KEY_COLS).any():
+        raise AssertionError("N-gram scorer produced duplicate item keys.")
+    write_table(features, args.output)
+
+    feature_name = f"ngram{args.order}_kn_surprisal"
+    audit_path = Path(args.audit_output) if args.audit_output else Path(args.output).with_name(
+        f"{Path(args.output).stem}_audit.json"
+    )
+    audit = {
+        "order": args.order,
+        "smoothing": "interpolated_kneser_ney",
+        "discount": args.discount,
+        "vocabulary_cutoff": args.vocabulary_cutoff,
+        "lowercase": lowercase,
+        "training_source": training_source,
+        "leaky_debug_run": leaky_debug,
+        "training_sentences": len(sentences),
+        "vocabulary_size": len(model.vocab),
+        "items": len(features),
+        "feature": feature_name,
+        "unit": "bits",
+        "missing_items": int(features[feature_name].isna().sum()),
+        "environment_versions": environment_versions(),
+    }
+    write_json(audit, audit_path)
+    print(f"Wrote {len(features):,} item features to {args.output}")
+    print(f"Audit: {audit_path}")
+    if leaky_debug:
+        print("WARNING: this is a leaky debug-only n-gram run and must not be reported.")
 
 
 if __name__ == "__main__":

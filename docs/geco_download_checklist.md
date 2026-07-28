@@ -1,23 +1,30 @@
 # GECO download checklist
 
-Use these files for the main sprint:
+For the monolingual English PACLIC analysis, obtain the official GECO files needed to verify both stimuli and reader metadata:
 
-- EnglishMaterial
-- MonolingualReadingData
-- SubjectInformation
+- `MonolingualReadingData.xlsx` — required for the main participant-word table;
+- `EnglishMaterial.xlsx` — retain for stimulus cross-checks;
+- `SubjectInformation.xlsx` — retain for participant/subset verification.
 
-Skip these initially:
+The current pipeline reads the main monolingual workbook and filters rows where:
 
-- DutchMaterials
-- L1ReadingData
-- L2ReadingData
-
-Reason: the paper's main design is English monolingual reading. The bilingual and Dutch files are only useful for an optional robustness extension.
-
-After downloading, run:
-
-```bash
-python -m src.inspect_tabular --input data/raw/geco/MonolingualReadingData.xlsx --rows 5
+```text
+GROUP = monolingual
+LANGUAGE_RANK = L1
+LANGUAGE = English
 ```
 
-Then fill `configs/geco.yaml` with the exact column names.
+Before a full run:
+
+```bash
+cd /path/to/paclic26_codebase_complete
+source .venv/bin/activate
+python -m src.inspect_tabular \
+  --input data/raw/geco/MonolingualReadingData.xlsx \
+  --sheet DATA \
+  --rows 5
+```
+
+Confirm the exact columns listed in `configs/geco.yaml`. If the official workbook version uses different names, update only the YAML or GECO mapping after documenting the difference.
+
+Do not redistribute GECO through the repository. The raw and processed data directories are ignored by Git.

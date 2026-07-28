@@ -1,42 +1,83 @@
-# src/scoring.py
-class ARScorer:
-    def score_sentence(self, text: str) -> dict[int, float]:
-        enc = tokenizer(text, return_offsets_mapping=True, return_tensors="pt")
-        offsets = enc.pop("offset_mapping")[0].tolist()
-        logits = model(**{k: v.to(device) for k, v in enc.items()}).logits[:, :-1]
-        target = enc["input_ids"][:, 1:].to(device)
-        log_probs = logits.log_softmax(dim=-1)
-        token_lp = log_probs.gather(-1, target.unsqueeze(-1)).squeeze(-1)[0].cpu().numpy()
+from __future__ import annotations
 
-        pred_offsets = offsets[1:]                     # token positions being predicted
-        mapping = token_to_word_map(text, pred_offsets)
-        word_scores = defaultdict(float)
-        for lp, word_idx in zip(token_lp, mapping):
-            if word_idx >= 0:
-                word_scores[word_idx] += float(-lp)   # surprisal
-        return dict(word_scores)
+from dataclasses import dataclass
+from typing import Sequence
 
-# src/scoring.py
-class MLMScorer:
-    def score_sentence(self, text: str) -> dict[int, float]:
-        enc = tokenizer(text, return_offsets_mapping=True, return_tensors="pt")
-        input_ids = enc["input_ids"][0]
-        offsets = enc["offset_mapping"][0].tolist()
-        mapping = token_to_word_map(text, offsets)
+import numpy as np
 
-        word_to_token_ix = defaultdict(list)
-        for ti, wi in enumerate(mapping):
-            if wi >= 0:
-                word_to_token_ix[wi].append(ti)
+from .common import overlapping_token_indices
 
-        results = {}
-        for wi, token_ixs in word_to_token_ix.items():
-            masked = input_ids.clone()
-            gold = input_ids[token_ixs].clone()
-            masked[token_ixs] = tokenizer.mask_token_id   # whole-word masking
-            logits = model(masked.unsqueeze(0).to(device)).logits[0].cpu()
-            log_probs = logits.log_softmax(dim=-1)
 
-            pll = sum(float(log_probs[ti, int(gold_id)]) for ti, gold_id in zip(token_ixs, gold))
-            results[wi] = -pll
-        return results
+@dataclass(frozen=True)
+class Window:
+    start: int
+    end: int
+
+
+def effective_context_limit(tokenizer, model, requested: int | None = None) -> int:
+    candidates: list[int] = []
+    if requested and requested > 0:
+        candidates.append(int(requested))
+    tokenizer_limit = getattr(tokenizer, "model_max_length", None)
+    if isinstance(tokenizer_limit, int) and 0 < tokenizer_limit < 1_000_000:
+        candidates.append(tokenizer_limit)
+    for attr in ("max_position_embeddings", "n_positions", "max_sequence_length"):
+        value = getattr(getattr(model, "config", object()), attr, None)
+        if isinstance(value, int) and value > 0:
+            candidates.append(value)
+    if not candidates:
+        raise ValueError("Could not determine the model context limit; pass --max-length.")
+    return min(candidates)
+
+
+def target_centred_window(
+    total_tokens: int,
+    target_start: int,
+    target_end: int,
+    capacity: int,
+) -> Window:
+    """Choose a content-token window that contains the complete target span."""
+    if not (0 <= target_start < target_end <= total_tokens):
+        raise ValueError("Invalid target token span.")
+    target_width = target_end - target_start
+    if target_width > capacity:
+        raise ValueError(
+            f"Target has {target_width} tokens, exceeding the available window capacity {capacity}."
+        )
+    spare = capacity - target_width
+    left_budget = spare // 2
+    start = max(0, target_start - left_budget)
+    end = min(total_tokens, start + capacity)
+    start = max(0, end - capacity)
+    if start > target_start or end < target_end:
+        raise AssertionError("Window construction failed to retain the complete target.")
+    return Window(start=start, end=end)
+
+
+def word_token_indices(
+    offsets: Sequence[tuple[int, int]],
+    spans: Sequence[tuple[int, int]],
+) -> list[list[int]]:
+    return [overlapping_token_indices(offsets, span) for span in spans]
+
+
+def aggregate_token_scores_to_words(
+    token_scores: Sequence[float],
+    offsets: Sequence[tuple[int, int]],
+    spans: Sequence[tuple[int, int]],
+) -> tuple[list[float | None], list[int]]:
+    mapping = word_token_indices(offsets, spans)
+    values: list[float | None] = []
+    counts: list[int] = []
+    scores = np.asarray(token_scores, dtype=float)
+    for indices in mapping:
+        counts.append(len(indices))
+        if not indices or np.isnan(scores[indices]).any():
+            values.append(None)
+        else:
+            values.append(float(scores[indices].sum()))
+    return values, counts
+
+
+def content_positions_from_special_mask(mask: Sequence[int]) -> list[int]:
+    return [index for index, is_special in enumerate(mask) if not int(is_special)]

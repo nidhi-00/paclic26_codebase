@@ -1,9 +1,7 @@
-# scripts/train_ngram.py
-from nltk.lm import KneserNeyInterpolated
-from nltk.lm.preprocessing import padded_everygram_pipeline
+"""Compatibility entry point for `python -m src.ngram_baseline`."""
 
-order = 5
-sentences = [line.strip().split() for line in open("data/raw/lm_train.txt") if line.strip()]
-ngrams, vocab = padded_everygram_pipeline(order, sentences)
-model = KneserNeyInterpolated(order=order)
-model.fit(ngrams, vocab)
+from src.ngram_baseline import main
+
+
+if __name__ == "__main__":
+    main()
