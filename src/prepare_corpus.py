@@ -45,10 +45,22 @@ def load_config(path: str | Path) -> dict[str, Any]:
 
 
 def rename_columns(df: pd.DataFrame, config: dict[str, Any]) -> pd.DataFrame:
+    """Populate canonical columns without creating duplicate column names.
+
+    A raw source column may be reused for multiple canonical fields, such as
+    WORD_ID_WITHIN_TRIAL for both word_id and position_in_sentence.
+    Existing canonical columns are deliberately overwritten by the configured
+    raw source.
+    """
+    if not df.columns.is_unique:
+        duplicates = df.columns[df.columns.duplicated()].tolist()
+        raise ValueError(f"Input table contains duplicate raw column names: {duplicates}")
+
     required_map = config.get("column_map", {}) or {}
     optional_map = config.get("optional_column_map", {}) or {}
-    rename: dict[str, str] = {}
+
     missing_config: list[str] = []
+    mappings: list[tuple[str, str]] = []
 
     for canonical in REQUIRED:
         raw = required_map.get(canonical, "")
@@ -60,21 +72,41 @@ def rename_columns(df: pd.DataFrame, config: dict[str, Any]) -> pd.DataFrame:
                 f"Available columns: {list(df.columns)}"
             )
         else:
-            rename[raw] = canonical
+            mappings.append((canonical, raw))
 
     if missing_config:
         raise ValueError(
-            "Fill these required YAML column_map fields: " + ", ".join(missing_config)
+            "Fill these required YAML column_map fields: "
+            + ", ".join(missing_config)
         )
 
     for canonical in OPTIONAL:
         raw = optional_map.get(canonical, "")
         if raw:
             if raw not in df.columns:
-                raise KeyError(f"Optional configured column {raw!r} was not found.")
-            rename[raw] = canonical
+                raise KeyError(
+                    f"Optional configured column {raw!r} for "
+                    f"{canonical!r} was not found."
+                )
+            mappings.append((canonical, raw))
 
-    return df.rename(columns=rename)
+    out = df.copy()
+
+    for canonical, raw in mappings:
+        source = df[raw]
+        if isinstance(source, pd.DataFrame):
+            raise ValueError(
+                f"Raw source column {raw!r} is duplicated in the input table."
+            )
+        out[canonical] = source
+
+    if not out.columns.is_unique:
+        duplicates = out.columns[out.columns.duplicated()].tolist()
+        raise AssertionError(
+            f"Canonical column construction produced duplicates: {duplicates}"
+        )
+
+    return out
 
 
 def apply_raw_row_filters(df: pd.DataFrame, config: dict[str, Any]) -> pd.DataFrame:

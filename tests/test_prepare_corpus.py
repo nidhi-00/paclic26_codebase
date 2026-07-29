@@ -75,3 +75,50 @@ def test_prepare_dataframe_uses_unique_items_and_preserves_punctuation() -> None
     assert items["is_punctuation"].tolist() == [0, 1, 0, 1]
     assert audit["duplicate_item_keys"] == 0
     assert audit["punctuation_context_rows"] == 4
+
+
+
+def test_rename_columns_overwrites_existing_canonical_columns() -> None:
+    from src.prepare_corpus import rename_columns
+
+    raw = pd.DataFrame(
+        {
+            "PP_NR": ["p1"],
+            "participant_id": ["stale-participant"],
+            "SENT": ["s1"],
+            "sentence_id": ["stale-sentence"],
+            "WORD_ID_WITHIN_TRIAL": [1],
+            "word_id": ["stale-word-id"],
+            "WORD": ["Hello,"],
+            "word": ["stale-word"],
+            "FFD": [100],
+            "GD": [150],
+            "GPT": [200],
+            "TRT": [250],
+        }
+    )
+
+    config = {
+        "column_map": {
+            "participant_id": "PP_NR",
+            "sentence_id": "SENT",
+            "word_id": "WORD_ID_WITHIN_TRIAL",
+            "word": "WORD",
+            "first_fixation_duration": "FFD",
+            "gaze_duration": "GD",
+            "go_past_time": "GPT",
+            "total_reading_time": "TRT",
+        },
+        "optional_column_map": {
+            "position_in_sentence": "WORD_ID_WITHIN_TRIAL",
+        },
+    }
+
+    renamed = rename_columns(raw, config)
+
+    assert renamed.columns.is_unique
+    assert renamed.loc[0, "participant_id"] == "p1"
+    assert renamed.loc[0, "sentence_id"] == "s1"
+    assert renamed.loc[0, "word_id"] == 1
+    assert renamed.loc[0, "position_in_sentence"] == 1
+    assert renamed.loc[0, "word"] == "Hello,"
