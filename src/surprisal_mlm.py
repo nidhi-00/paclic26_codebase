@@ -35,17 +35,21 @@ def prepare_window(
     start: int,
     end: int,
 ) -> tuple[torch.Tensor, list[int]]:
-    prepared = tokenizer.prepare_for_model(
-        list(content_ids[start:end]),
-        add_special_tokens=True,
-        return_special_tokens_mask=True,
-        return_attention_mask=False,
-        truncation=False,
+    content = list(content_ids[start:end])
+    prepared_ids = tokenizer.build_inputs_with_special_tokens(content)
+    special_tokens_mask = tokenizer.get_special_tokens_mask(
+        prepared_ids,
+        already_has_special_tokens=True,
     )
-    input_ids = torch.tensor(prepared["input_ids"], dtype=torch.long)
-    content_positions = content_positions_from_special_mask(prepared["special_tokens_mask"])
-    if len(content_positions) != end - start:
-        raise AssertionError("Tokenizer special-token mapping does not match content length.")
+
+    input_ids = torch.tensor(prepared_ids, dtype=torch.long)
+    content_positions = content_positions_from_special_mask(special_tokens_mask)
+
+    if len(content_positions) != len(content):
+        raise AssertionError(
+            "Tokenizer special-token mapping does not match content length."
+        )
+
     return input_ids, content_positions
 
 
