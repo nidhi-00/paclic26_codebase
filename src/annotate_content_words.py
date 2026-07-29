@@ -25,7 +25,18 @@ def annotate_items(
 
     rows: list[pd.DataFrame] = []
     for _, group in items.sort_values(["sentence_id", "position_in_sentence"]).groupby("sentence_id", sort=False):
-        tokens = group["stimulus_token"].astype(str).tolist()
+        if "lexical_form" in group.columns:
+            tag_tokens = group["lexical_form"].astype("string").fillna("").copy()
+            empty = tag_tokens.str.len().eq(0)
+            tag_tokens.loc[empty] = (
+                group.loc[empty, "stimulus_token"]
+                .astype("string")
+                .fillna("")
+            )
+            tokens = tag_tokens.astype(str).tolist()
+        else:
+            tokens = group["stimulus_token"].astype(str).tolist()
+
         tagged = list(tagger(tokens))
         if len(tagged) != len(group):
             raise AssertionError("POS tagger returned a different number of tokens.")

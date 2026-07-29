@@ -21,3 +21,28 @@ def test_content_word_annotation_uses_penn_prefixes() -> None:
 
     out = annotate_items(items, tagger=fake_tagger)
     assert out["is_content_word"].tolist() == [1, 1, 1, 0]
+
+
+def test_content_word_annotation_uses_lexical_form_for_pos_tagging() -> None:
+    items = pd.DataFrame(
+        {
+            "sentence_id": ["s1", "s1"],
+            "word_id": ["1", "2"],
+            "position_in_sentence": [1, 2],
+            "stimulus_token": ['"I', "matter.\""],
+            "lexical_form": ["I", "matter"],
+            "is_analysis_token": [1, 1],
+        }
+    )
+
+    observed = {}
+
+    def fake_tagger(tokens):
+        observed["tokens"] = list(tokens)
+        return list(zip(tokens, ["PRP", "NN"]))
+
+    out = annotate_items(items, tagger=fake_tagger)
+
+    assert observed["tokens"] == ["I", "matter"]
+    assert out["pos"].tolist() == ["PRP", "NN"]
+    assert out["is_content_word"].tolist() == [0, 1]
