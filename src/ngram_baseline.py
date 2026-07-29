@@ -8,13 +8,30 @@ from typing import Iterable, Sequence
 import pandas as pd
 from nltk.lm import KneserNeyInterpolated, Vocabulary
 from nltk.lm.preprocessing import padded_everygram_pipeline
+from nltk.tokenize import TreebankWordTokenizer
 from tqdm import tqdm
 
 from .common import ITEM_KEY_COLS, environment_versions, read_table, write_json, write_table
+import re
+
+
+TOKENIZER = TreebankWordTokenizer()
+
+
+def normalise_tokenisation_text(text: str) -> str:
+    normalised = str(text).strip()
+
+    # WikiText writes punctuation as separated markers such as:
+    # "role @-@ playing", "word @,@ next", and "word @.@ next".
+    normalised = re.sub(r"\s*@-@\s*", "-", normalised)
+    normalised = re.sub(r"\s*@,@\s*", " , ", normalised)
+    normalised = re.sub(r"\s*@\.@\s*", " . ", normalised)
+
+    return re.sub(r"\s+", " ", normalised).strip()
 
 
 def tokenize_line(text: str, lowercase: bool = True) -> list[str]:
-    tokens = str(text).strip().split()
+    tokens = TOKENIZER.tokenize(normalise_tokenisation_text(text))
     return [token.casefold() for token in tokens] if lowercase else tokens
 
 
@@ -30,11 +47,30 @@ def load_external_sentences(path: str | Path, lowercase: bool = True) -> list[li
     return sentences
 
 
-def corpus_sentences(items: pd.DataFrame, lowercase: bool = True) -> list[list[str]]:
-    return [
-        [token.casefold() if lowercase else token for token in group["stimulus_token"].astype(str)]
-        for _, group in items.sort_values(["sentence_id", "position_in_sentence"]).groupby("sentence_id", sort=False)
-    ]
+def corpus_sentences(
+    items: pd.DataFrame,
+    lowercase: bool = True,
+) -> list[list[str]]:
+    sentences: list[list[str]] = []
+
+    grouped = items.sort_values(
+        ["sentence_id", "position_in_sentence"]
+    ).groupby("sentence_id", sort=False)
+
+    for _, group in grouped:
+        tokens: list[str] = []
+
+        for stimulus_token in group["stimulus_token"].astype(str):
+            tokens.extend(
+                tokenize_line(
+                    stimulus_token,
+                    lowercase=lowercase,
+                )
+            )
+
+        sentences.append(tokens)
+
+    return sentences
 
 
 def train_model(
@@ -63,25 +99,71 @@ def score_items(
     probability_floor: float = 1e-12,
 ) -> pd.DataFrame:
     feature = f"ngram{order}_kn_surprisal"
+    count_feature = f"ngram{order}_kn_subtoken_count"
+    oov_feature = f"ngram{order}_kn_oov_subtoken_count"
+
     rows: list[dict] = []
-    grouped = items.sort_values(["sentence_id", "position_in_sentence"]).groupby("sentence_id", sort=False)
-    for _, group in tqdm(grouped, desc=f"{order}-gram Kneser-Ney surprisal"):
+
+    grouped = items.sort_values(
+        ["sentence_id", "position_in_sentence"]
+    ).groupby("sentence_id", sort=False)
+
+    for _, group in tqdm(
+        grouped,
+        desc=f"{order}-gram Kneser-Ney surprisal",
+    ):
         context: list[str] = []
+
         for _, item in group.iterrows():
-            token = str(item["stimulus_token"])
-            token = token.casefold() if lowercase else token
-            lookup_token = model.vocab.lookup(token)
-            lookup_context = [model.vocab.lookup(value) for value in context[-(order - 1) :]]
-            probability = float(model.score(lookup_token, lookup_context))
-            surprisal = -math.log2(max(probability, probability_floor))
+            pieces = tokenize_line(
+                item["stimulus_token"],
+                lowercase=lowercase,
+            )
+
+            if not pieces:
+                fallback = str(item["stimulus_token"]).strip()
+                pieces = [
+                    fallback.casefold()
+                    if lowercase
+                    else fallback
+                ]
+
+            surprisal = 0.0
+            oov_count = 0
+
+            for token in pieces:
+                if token not in model.vocab:
+                    oov_count += 1
+
+                lookup_token = model.vocab.lookup(token)
+                lookup_context = [
+                    model.vocab.lookup(value)
+                    for value in context[-(order - 1):]
+                ]
+
+                probability = float(
+                    model.score(
+                        lookup_token,
+                        lookup_context,
+                    )
+                )
+
+                surprisal += -math.log2(
+                    max(probability, probability_floor)
+                )
+
+                context.append(token)
+
             rows.append(
                 {
                     "sentence_id": item["sentence_id"],
                     "word_id": item["word_id"],
                     feature: surprisal,
+                    count_feature: len(pieces),
+                    oov_feature: oov_count,
                 }
             )
-            context.append(token)
+
     return pd.DataFrame(rows)
 
 
@@ -97,7 +179,7 @@ def main() -> None:
     )
     parser.add_argument("--order", type=int, default=5)
     parser.add_argument("--discount", type=float, default=0.1)
-    parser.add_argument("--vocabulary-cutoff", type=int, default=1)
+    parser.add_argument("--vocabulary-cutoff", type=int, default=2)
     parser.add_argument("--preserve-case", action="store_true")
     parser.add_argument("--audit-output", default=None)
     args = parser.parse_args()
@@ -139,8 +221,15 @@ def main() -> None:
     write_table(features, args.output)
 
     feature_name = f"ngram{args.order}_kn_surprisal"
-    audit_path = Path(args.audit_output) if args.audit_output else Path(args.output).with_name(
-        f"{Path(args.output).stem}_audit.json"
+    count_feature = f"ngram{args.order}_kn_subtoken_count"
+    oov_feature = f"ngram{args.order}_kn_oov_subtoken_count"
+
+    audit_path = (
+        Path(args.audit_output)
+        if args.audit_output
+        else Path(args.output).with_name(
+            f"{Path(args.output).stem}_audit.json"
+        )
     )
     audit = {
         "order": args.order,
@@ -155,7 +244,25 @@ def main() -> None:
         "items": len(features),
         "feature": feature_name,
         "unit": "bits",
-        "missing_items": int(features[feature_name].isna().sum()),
+        "tokenizer": "nltk.TreebankWordTokenizer",
+        "wikitext_marker_normalisation": [
+            "@-@ -> -",
+            "@,@ -> ,",
+            "@.@ -> .",
+        ],
+        "scored_subtokens": int(
+            features[count_feature].sum()
+        ),
+        "oov_subtokens": int(
+            features[oov_feature].sum()
+        ),
+        "oov_subtoken_rate": float(
+            features[oov_feature].sum()
+            / max(1, features[count_feature].sum())
+        ),
+        "missing_items": int(
+            features[feature_name].isna().sum()
+        ),
         "environment_versions": environment_versions(),
     }
     write_json(audit, audit_path)
