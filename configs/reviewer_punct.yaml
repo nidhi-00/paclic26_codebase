@@ -1,0 +1,93 @@
+targets:
+- log_first_fixation_duration
+- log_gaze_duration
+- log_go_past_time
+- log_total_reading_time
+baseline:
+- word_length
+- zipf_frequency
+- position_in_sentence
+- sentence_length
+- is_sentence_initial
+- is_sentence_final
+- prev_word_length
+- prev_zipf_frequency
+- prev_clause_punctuation
+features:
+  ngram: ngram5_kn_surprisal
+  gpt2: gpt2_surprisal
+  bert: bert_base_uncased_tokenwise_pseudo_surprisal
+  roberta: roberta_base_tokenwise_pseudo_surprisal
+  bert_whole_word: bert_base_uncased_whole_word_pseudo_surprisal
+  roberta_whole_word: roberta_base_whole_word_pseudo_surprisal
+  prev_ngram: prev_ngram5_kn_surprisal
+  prev_gpt2: prev_gpt2_surprisal
+  prev_bert: prev_bert_base_uncased_tokenwise_pseudo_surprisal
+  prev_roberta: prev_roberta_base_tokenwise_pseudo_surprisal
+models:
+  lexical: []
+  lexical_ngram:
+  - ngram
+  lexical_gpt2:
+  - gpt2
+  lexical_bert:
+  - bert
+  lexical_roberta:
+  - roberta
+  lexical_all_transformers:
+  - gpt2
+  - bert
+  - roberta
+  lexical_ngram_gpt2:
+  - ngram
+  - gpt2
+  full_current:
+  - ngram
+  - gpt2
+  - bert
+  - roberta
+  lexical_gpt2_spillover:
+  - gpt2
+  - prev_gpt2
+  full_spillover:
+  - ngram
+  - gpt2
+  - bert
+  - roberta
+  - prev_ngram
+  - prev_gpt2
+  - prev_bert
+  - prev_roberta
+  lexical_bert_whole_word:
+  - bert_whole_word
+  lexical_roberta_whole_word:
+  - roberta_whole_word
+  lexical_all_whole_word:
+  - gpt2
+  - bert_whole_word
+  - roberta_whole_word
+core_models:
+- lexical
+- lexical_gpt2
+- lexical_bert
+- lexical_roberta
+- lexical_all_transformers
+splits:
+  sentence:
+    group_column: sentence_id
+    method: group_kfold
+    folds: 5
+  participant:
+    group_column: participant_id
+    method: leave_one_group_out
+robustness:
+  full: is_analysis_token == 1
+  strict_adjacent: is_analysis_token == 1 and lag_position_distance == 1
+ridge:
+  alphas:
+  - 1.0
+  tune_alpha: false
+  inner_folds: 3
+bootstrap:
+  iterations: 2000
+  seed: 20260801
